@@ -1,9 +1,11 @@
-# financial_reports.py
+# utils/financial_reports.py
 import pandas as pd
 import numpy as np
 import re
-from config import *
-from utils import extract_all
+
+# Relative imports
+from .config import *
+from .functions import extract_all
 
 def generate_pivot_and_mrar():
     invoices = pd.read_excel(MIS_PATH, sheet_name="Invoices", skiprows=2)

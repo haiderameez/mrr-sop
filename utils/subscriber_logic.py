@@ -1,7 +1,9 @@
-# subscriber_logic.py
+# utils/subscriber_logic.py
 import pandas as pd
 from openpyxl import load_workbook
-from config import *
+
+# Relative import
+from .config import *
 
 def process_subscribers_and_churn(mr_ar_df, pivot_days, pivot_month):    
     # Load Addition/Deletion sheets with cleanup

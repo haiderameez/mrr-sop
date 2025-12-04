@@ -1,9 +1,11 @@
-# utils.py
+# utils/functions.py
 import pandas as pd
 import re
 import numpy as np
 from datetime import datetime, timedelta
-from config import TARGET_YEAR, TARGET_MONTH
+
+# Import config using relative import
+from .config import TARGET_YEAR, TARGET_MONTH
 
 def extract_all(inv):
     nums = re.findall(r'\d+', str(inv))

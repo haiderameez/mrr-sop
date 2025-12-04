@@ -1,10 +1,9 @@
 # app.py
-from accrual_logic import process_accrual_update
-from financial_reports import generate_pivot_and_mrar
-from subscriber_logic import process_subscribers_and_churn
+from utils.accrual_logic import process_accrual_update
+from utils.financial_reports import generate_pivot_and_mrar
+from utils.subscriber_logic import process_subscribers_and_churn
 
-def main():
-    
+def main():    
     # Step 1: Update Accrual Logic (Invoices -> Master -> MIS)
     # This updates the 'FY 25-26-Accrual' sheet in the Excel file
     process_accrual_update()

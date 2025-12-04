@@ -1,11 +1,13 @@
-# accrual_logic.py
+# utils/accrual_logic.py
 import pandas as pd
 import numpy as np
 import re
 from openpyxl import load_workbook
 from datetime import datetime
-from config import *
-from utils import (
+
+# Relative imports
+from .config import *
+from .functions import (
     extract_all, normalize_name, get_month_start_end, months_list_from_field,
     overlap_days, safe_round
 )
