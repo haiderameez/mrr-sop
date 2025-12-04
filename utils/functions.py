@@ -1,18 +1,20 @@
-# utils/functions.py
-import pandas as pd
 import re
-import numpy as np
+import logging
 from datetime import datetime, timedelta
 
-# Import config using relative import
-from .config import TARGET_YEAR, TARGET_MONTH
+import pandas as pd
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def extract_all(inv):
+    logger.debug("Extracting invoice components from value: %s", inv)
     nums = re.findall(r'\d+', str(inv))
     cleaned = [n[-3:] for n in nums if len(n) >= 3]
     return ['INV-25-26-000' + d for d in cleaned]
 
 def get_month_start_end(month, year):
+    logger.info("Calculating month boundaries for %s/%s", month, year)
     start = datetime(year, month, 1)
     if month == 12:
         end = datetime(year, 12, 31)
@@ -21,6 +23,7 @@ def get_month_start_end(month, year):
     return start, end
 
 def normalize_name(s):
+    logger.debug("Normalizing customer name: %s", s)
     if pd.isna(s):
         return ""
     s = str(s).strip()
@@ -29,6 +32,7 @@ def normalize_name(s):
     return s.lower()
 
 def parse_token_month_year(token):
+    logger.debug("Parsing token for month/year info: %s", token)
     token = token.strip().lower().replace('.', '')
     m = re.search(r'([a-z]+)', token)
     y = re.search(r'(\d{2,4})', token)
@@ -43,7 +47,8 @@ def parse_token_month_year(token):
         yy = 2000 + int(val) if len(val) == 2 else int(val)
     return mm, yy
 
-def months_list_from_field(v):
+def months_list_from_field(v, default_year=None):
+    logger.debug("Generating months list from field: %s", v)
     if pd.isna(v):
         return []
     if isinstance(v, (pd.Timestamp, datetime)):
@@ -59,7 +64,7 @@ def months_list_from_field(v):
         if not sm or not em:
             return []
         if not sy:
-            sy = TARGET_YEAR
+            sy = default_year or datetime.now().year
         if not ey:
             ey = sy
         start = datetime(sy, sm, 1)
@@ -94,6 +99,13 @@ def months_list_from_field(v):
     return sorted(set(out))
 
 def overlap_days(start, end, period_start, period_end):
+    logger.debug(
+        "Computing overlap days between %s-%s and %s-%s",
+        start,
+        end,
+        period_start,
+        period_end,
+    )
     s = max(start, period_start)
     e = min(end, period_end)
     if e < s:
@@ -101,6 +113,7 @@ def overlap_days(start, end, period_start, period_end):
     return (e - s).days + 1
 
 def safe_round(x):
+    logger.debug("Applying safe_round to value: %s", x)
     if pd.isna(x) or x == '':
         return x
     try:

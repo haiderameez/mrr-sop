@@ -1,25 +1,47 @@
-# utils/accrual_logic.py
+import re
+import logging
+from datetime import datetime
+from typing import TYPE_CHECKING
+
 import pandas as pd
 import numpy as np
-import re
 from openpyxl import load_workbook
-from datetime import datetime
 
-# Relative imports
-from .config import *
 from .functions import (
     extract_all, normalize_name, get_month_start_end, months_list_from_field,
     overlap_days, safe_round
 )
 
-def process_accrual_update():
-    # Load and clean Invoice
-    invoice = pd.read_excel(INVOICE_FILE)
+if TYPE_CHECKING:
+    from app import WorkflowConfig
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+MONTH_NAME_MAP = {
+    month: datetime(2000, month, 1).strftime('%b')
+    for month in range(1, 13)
+}
+
+def process_accrual_update(config: "WorkflowConfig"):
+    invoice_path = config.invoice_file
+    master_path = config.master_file
+    mis_path = config.mis_path
+    master_sheet = config.master_sheet_name
+    mis_sheet = config.mis_sheet_name
+    target_month = config.target_month
+    target_year = config.target_year
+    month_name = MONTH_NAME_MAP[target_month]
+
+    logger.info("Loading invoice data from %s", invoice_path)
+    invoice = pd.read_excel(invoice_path)
+    logger.info("Invoice rows loaded: %d", len(invoice))
     invoice = invoice[~invoice["Invoice ID"].duplicated(keep=False)]
+    logger.info("Invoice rows after deduplication: %d", len(invoice))
     invoice = invoice[["Invoice Number", "Customer Name"]]
 
-    # Load and clean Master
-    master = pd.read_excel(MASTER_FILE, skiprows=2, sheet_name=MASTER_SHEET_NAME)
+    logger.info("Loading master sheet %s from %s", master_sheet, master_path)
+    master = pd.read_excel(master_path, skiprows=2, sheet_name=master_sheet)
     master.columns = master.columns.str.strip()
     master = master.drop(master.columns[10:], axis=True)
     master = master.rename(columns={"Invoice": "Invoice Number"})
@@ -35,19 +57,22 @@ def process_accrual_update():
         right_on='All Invoices',
         how='left'
     )
+    logger.info("Merged invoice/master rows: %d", len(merged))
 
-    mis = pd.read_excel(MIS_PATH, skiprows=2, sheet_name=MIS_SHEET_NAME)
+    logger.info("Loading MIS sheet %s from %s", mis_sheet, mis_path)
+    mis = pd.read_excel(mis_path, skiprows=2, sheet_name=mis_sheet)
     mis = mis.rename(columns=lambda x: x.strip() if isinstance(x, str) else x)
 
     if 'Invoice' in mis.columns and 'Invoice Number' not in mis.columns:
         mis = mis.rename(columns={"Invoice": "Invoice Number"})
 
-    month_start, month_end = get_month_start_end(TARGET_MONTH, TARGET_YEAR)
+    month_start, month_end = get_month_start_end(target_month, target_year)
 
     # Pre-calculations for MIS
     mis['Customer Name'] = mis['Customer Name'].fillna('')
     mis['cn_norm'] = mis['Customer Name'].apply(normalize_name)
 
+    logger.info("Beginning MIS enrichment across %d rows", len(mis))
     for idx, row in mis.iterrows():
         start = pd.to_datetime(row.get('Start Date'), errors='coerce')
         end = pd.to_datetime(row.get('End Date'), errors='coerce')
@@ -66,17 +91,18 @@ def process_accrual_update():
     for _, r in merged.iterrows():
         merged_map.setdefault(r['cn_norm'], []).append(r)
 
-    col_name_days = f'Days in {MONTH_NAME}'
-    col_name_sales_days = f'{MONTH_NAME} Sales in days'
-    col_name_sales_months = f'{MONTH_NAME} Sales in months'
+    
+    col_name_days = f'Days in {month_name}'
+    col_name_sales_days = f'{month_name} Sales in days'
+    col_name_sales_months = f'{month_name} Sales in months'
 
     for idx, row in mis.iterrows():
         norm = row.get('cn_norm', '')
         start = pd.to_datetime(row.get('Start Date'), errors='coerce')
         end = pd.to_datetime(row.get('End Date'), errors='coerce')
-        months_present = months_list_from_field(row.get('Months'))
+        months_present = months_list_from_field(row.get('Months'), target_year)
         overlap = pd.notna(start) and pd.notna(end) and not (end < month_start or start > month_end)
-        applicable = (TARGET_MONTH in months_present) or overlap
+        applicable = (target_month in months_present) or overlap
         
         if norm in merged_map:
             mrow = merged_map[norm][-1]
@@ -123,9 +149,9 @@ def process_accrual_update():
                 mc = max(1, months_diff)
             monthwise = amt / mc if mc > 0 else 0
             
-            closing = (end.year == TARGET_YEAR and end.month == TARGET_MONTH)
+            closing = (end.year == target_year and end.month == target_month)
             
-            if TARGET_MONTH in months_present:
+            if target_month in months_present:
                 sales_months = 0 if closing else monthwise
             elif overlap:
                 sales_months = monthwise
@@ -154,7 +180,7 @@ def process_accrual_update():
         
         new = pd.Series(index=mis.columns, dtype=object)
         if 'Months' in mis.columns:
-            new['Months'] = f'{MONTH_NAME}-{str(TARGET_YEAR)[-2:]}'
+            new['Months'] = f'{month_name}-{str(target_year)[-2:]}'
         
         new['Customer Name'] = r.get('Customer Name_y')
         new['cn_norm'] = nm
@@ -185,14 +211,14 @@ def process_accrual_update():
                 mc = max(1, months_diff)
             monthwise = amt / mc if mc > 0 else 0
             
-            closing = (e.year == TARGET_YEAR and e.month == TARGET_MONTH)
+            closing = (e.year == target_year and e.month == target_month)
             
             if 'Months' in new.index:
-                months_present_new = months_list_from_field(new.get('Months'))
+                months_present_new = months_list_from_field(new.get('Months'), target_year)
             else:
                 months_present_new = []
             
-            if TARGET_MONTH in months_present_new:
+            if target_month in months_present_new:
                 sales_months_new = 0 if closing else monthwise
             else:
                 sales_months_new = monthwise
@@ -233,8 +259,8 @@ def process_accrual_update():
             mis[col] = np.nan
 
     # Writing back to Excel with formatting retention
-    wb = load_workbook(MIS_PATH)
-    ws = wb[MIS_SHEET_NAME]
+    wb = load_workbook(mis_path)
+    ws = wb[mis_sheet]
 
     header_row_excel = 3
     max_row = ws.max_row
@@ -252,5 +278,7 @@ def process_accrual_update():
         for c_idx, col in enumerate(mis.columns, start=1):
             ws.cell(row=excel_row, column=c_idx).value = mis.iloc[r][col]
 
-    wb.save(MIS_PATH)
+    logger.info("Writing updated MIS data back to %s", mis_path)
+    wb.save(mis_path)
+    logger.info("Accrual update complete")
     return mis  # Return DF for next steps

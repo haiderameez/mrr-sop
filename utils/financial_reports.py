@@ -1,15 +1,25 @@
-# utils/financial_reports.py
+import re
+import logging
+from typing import TYPE_CHECKING
+
 import pandas as pd
 import numpy as np
-import re
+from openpyxl import load_workbook
 
-# Relative imports
-from .config import *
 from .functions import extract_all
 
-def generate_pivot_and_mrar():
-    invoices = pd.read_excel(MIS_PATH, sheet_name="Invoices", skiprows=2)
-    fy_acc = pd.read_excel(MIS_PATH, sheet_name=MIS_SHEET_NAME, skiprows=2)
+if TYPE_CHECKING:
+    from app import WorkflowConfig
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def generate_pivot_and_mrar(config: "WorkflowConfig"):
+    mis_path = config.mis_path
+    mis_sheet = config.mis_sheet_name
+    logger.info("Reading invoices and accrual sheets from %s", mis_path)
+    invoices = pd.read_excel(mis_path, sheet_name="Invoices", skiprows=2)
+    fy_acc = pd.read_excel(mis_path, sheet_name=mis_sheet, skiprows=2)
 
     # --- B2B Logic ---
     b2b_df = invoices[invoices["Nature"].astype(str).str.upper() == "B2B"]
@@ -37,13 +47,20 @@ def generate_pivot_and_mrar():
                 return month_order_map[m]
         return 999
 
+    def month_sort_key(col):
+        return (extract_month_index(col), col.lower())
+
     dynamic_month_cols = sorted(all_dynamic, key=extract_month_index)
     month_cols = fixed_month_cols + dynamic_month_cols
 
+    logger.info("Building pivot_month for %d B2B rows", len(b2b_data))
     pivot_month = b2b_data.pivot_table(index="Payment Cycle", values=month_cols, aggfunc="sum").reset_index()
-    grand_total_pm = pivot_month[month_cols].sum().to_frame().T
+    value_month_cols = [c for c in month_cols if c in pivot_month.columns]
+    value_month_cols = sorted(value_month_cols, key=month_sort_key)
+    grand_total_pm = pivot_month[value_month_cols].sum().to_frame().T
     grand_total_pm.insert(0, "Payment Cycle", "Grand Total")
     pivot_month = pd.concat([pivot_month, grand_total_pm], ignore_index=True)
+    pivot_month = pivot_month[["Payment Cycle"] + value_month_cols]
 
     # 2. Pivot Days (Sales in days)
     fixed_date_cols = [
@@ -59,10 +76,14 @@ def generate_pivot_and_mrar():
     dynamic_date_cols = sorted(all_dynamic_days, key=extract_month_index)
     date_cols = fixed_date_cols + dynamic_date_cols
 
+    logger.info("Building pivot_days for %d B2B rows", len(b2b_data))
     pivot_days = b2b_data.pivot_table(index="Payment Cycle", values=date_cols, aggfunc="sum").reset_index()
-    grand_total_pd = pivot_days[date_cols].sum().to_frame().T
+    value_day_cols = [c for c in date_cols if c in pivot_days.columns]
+    value_day_cols = sorted(value_day_cols, key=month_sort_key)
+    grand_total_pd = pivot_days[value_day_cols].sum().to_frame().T
     grand_total_pd.insert(0, "Payment Cycle", "Grand Total")
     pivot_days = pd.concat([pivot_days, grand_total_pd], ignore_index=True)
+    pivot_days = pivot_days[["Payment Cycle"] + value_day_cols]
 
     # --- B2C Logic ---
     b2c_df = invoices[invoices["Nature"].astype(str).str.upper() == "B2C"].copy()
@@ -113,6 +134,7 @@ def generate_pivot_and_mrar():
             c.endswith("Sales in months") or c.endswith("in months") or c.lower().startswith("invoiced amount for")
         )
     ]
+    dynamic_month_cols_b2c = sorted(dynamic_month_cols_b2c, key=month_sort_key)
     dynamic_month_rename = {c: extract_month_name(c) for c in dynamic_month_cols_b2c if extract_month_name(c)}
     rename_map_months = {c: extract_month_name(c) for c in available_month_fixed}
     rename_map_months.update(dynamic_month_rename)
@@ -124,6 +146,7 @@ def generate_pivot_and_mrar():
 
     final_months = sorted(rename_map_months.values(), key=lambda x: month_order_map[x[:3].lower()])
 
+    logger.info("Combining MR-AR dataframe with B2C totals")
     mr_ar = pd.concat([mr_ar_b2b, b2c_totals[["Particulars"] + final_months]], ignore_index=True)
     
     # Correction for B2C short names if present
@@ -131,4 +154,31 @@ def generate_pivot_and_mrar():
         mr_ar.loc[mr_ar["Particulars"]=="B2C", ["Apr","Jun","Jul","Aug","Sep"]].values
     mr_ar = mr_ar.drop(columns=["Apr", "Jun", "Jul", "Aug", "Sep"], errors="ignore")
 
+    logger.info(
+        "Generated MR-AR (%d rows), Pivot Days (%d rows), Pivot Month (%d rows)",
+        len(mr_ar),
+        len(pivot_days),
+        len(pivot_month),
+    )
     return mr_ar, pivot_days, pivot_month
+
+
+def save_financial_reports(config: "WorkflowConfig", mr_ar_df, pivot_days, pivot_month):
+    """Write MR-AR and pivot sheets back to the MIS workbook."""
+    mis_path = config.mis_path
+    logger.info("Saving financial reports to workbook: %s", mis_path)
+    wb = load_workbook(mis_path)
+
+    remove_targets = [
+        sheet for sheet in wb.sheetnames
+        if sheet.lower().startswith("pivot") or sheet in {"MR-AR"}
+    ]
+    for sheet_name in remove_targets:
+        wb.remove(wb[sheet_name])
+    wb.save(mis_path)
+
+    with pd.ExcelWriter(mis_path, engine="openpyxl", mode="a") as writer:
+        mr_ar_df.to_excel(writer, sheet_name="MR-AR", index=False)
+        pivot_days.to_excel(writer, sheet_name="Pivot Days", index=False)
+        pivot_month.to_excel(writer, sheet_name="Pivot Month", index=False)
+    logger.info("Financial sheets updated successfully")
