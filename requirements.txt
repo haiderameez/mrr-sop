@@ -1,0 +1,8 @@
+streamlit
+pandas
+numpy
+gspread
+google-auth
+python-dotenv
+python-dateutil
+supabase
